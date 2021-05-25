@@ -31,7 +31,8 @@ pub fn setup_wayland() -> DisplayConnection {
 	// Sync with the server to make sure we have the globals list.
 	event_queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).unwrap();
 
-	// Get the compositor.
+	// Get the compositor. Resposible for managing pixel buffers.
+    // https://wayland-book.com/surfaces/compositor.html
 	let compositor: Main<WlCompositor> = globals.instantiate_exact(1).unwrap();
 
 	// Xdg protocol is a wayland extension that describes application windows.
@@ -39,11 +40,10 @@ pub fn setup_wayland() -> DisplayConnection {
     // https://wayland-book.com/xdg-shell-basics.html
 	let xdg = globals.instantiate_exact::<xdg_wm_base::XdgWmBase>(1).unwrap();
 
-    // The only part we need to implement is the ping component, so that the server knows if were
-    // responsive.
-	xdg.quick_assign(|base, event, _| {
+    // The only part we need to implement is ping, so that the server knows if we're responsive.
+	xdg.quick_assign(|xdg, event, _| {
         if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
+            xdg.pong(serial);
         }
     });
 
@@ -56,4 +56,8 @@ pub fn setup_wayland() -> DisplayConnection {
 	}
 }
 
-
+impl DisplayConnection {
+    pub fn sync(&mut self) {
+	    self.event_queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).unwrap();
+    }
+}

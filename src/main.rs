@@ -1,46 +1,42 @@
-extern crate gl;
-extern crate khronos_egl as egl;
-extern crate wayland_client;
-extern crate wayland_egl;
-extern crate wayland_protocols;
-
 mod window;
+mod vec2;
+mod mygl;
 
 use std::process::exit;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::ptr;
-use std::ffi::CStr;
 
-use gl::types::{GLint, GLuint, GLchar, GLenum, GLboolean, GLvoid};
+use vec2::Vec2;
 
-use egl::API as egl;
+use mygl::render;
+
+use khronos_egl::{
+    Display, Context, Config, NativeWindowType,
+    RED_SIZE, GREEN_SIZE, BLUE_SIZE, NONE,
+    CONTEXT_MAJOR_VERSION,
+    CONTEXT_MINOR_VERSION,
+    CONTEXT_OPENGL_PROFILE_MASK,
+    CONTEXT_OPENGL_CORE_PROFILE_BIT,
+    OPENGL_API,
+    API as egl,
+};
 
 use wayland_client::{
 	protocol::wl_surface::WlSurface,
-	DispatchData, Display, Main
+	Main,
 };
 
 use wayland_protocols::xdg_shell::client::{
-	xdg_surface::{self, XdgSurface},
+	xdg_surface,
     xdg_toplevel,
 };
 
 use window::{ setup_wayland, DisplayConnection };
 
-fn setup_egl(display: &Display) -> egl::Display {
-	let egl_display = egl.get_display(display.get_display_ptr() as *mut std::ffi::c_void).unwrap();
-	egl.initialize(egl_display).unwrap();
-
-	egl_display
-}
-
-fn create_context(display: egl::Display) -> (egl::Context, egl::Config) {
+fn create_context(display: Display) -> (Context, Config) {
 	let attributes = [
-		egl::RED_SIZE,   8,
-		egl::GREEN_SIZE, 8,
-		egl::BLUE_SIZE,  8,
-		egl::NONE,
+		RED_SIZE,   8,
+		GREEN_SIZE, 8,
+		BLUE_SIZE,  8,
+		NONE,
 	];
 
 	let config = egl.choose_first_config(display, &attributes)
@@ -48,10 +44,10 @@ fn create_context(display: egl::Display) -> (egl::Context, egl::Config) {
 		.expect("no EGL configuration found");
 
 	let context_attributes = [
-		egl::CONTEXT_MAJOR_VERSION, 4,
-		egl::CONTEXT_MINOR_VERSION, 0,
-		egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-		egl::NONE,
+		CONTEXT_MAJOR_VERSION, 4,
+		CONTEXT_MINOR_VERSION, 0,
+		CONTEXT_OPENGL_PROFILE_MASK, CONTEXT_OPENGL_CORE_PROFILE_BIT,
+		NONE,
 	];
 
 	let context = egl.create_context(display, config, None, &context_attributes)
@@ -60,26 +56,33 @@ fn create_context(display: egl::Display) -> (egl::Context, egl::Config) {
 	(context, config)
 }
 
-struct Surface {
-	handle: Main<WlSurface>,
-	initialized: AtomicBool
-}
+fn create_surface(connection: &mut DisplayConnection, name: String, size: Vec2<i32>)
+    -> (Main<WlSurface>, NativeWindowType)  {
+    // Wl surfaces represent an output that is visible to the user.
+    // https://wayland-book.com/surfaces-in-depth.html
+	let surface = connection.compositor.create_surface();
 
-fn create_surface(
-	ctx: &DisplayConnection,
-	egl_display: egl::Display,
-	egl_context: egl::Context,
-	egl_config: egl::Config,
-	width: i32,
-	height: i32,
-) -> Arc<Surface> {
-    //
-	let wl_surface = ctx.compositor.create_surface();
-	let xdg_surface = ctx.xdg.get_xdg_surface(&wl_surface);
+    // Wraper around WlSurface to add the EGL capabilities.
+    // https://docs.rs/wayland-egl/0.28.5/wayland_egl/struct.WlEglSurface.html
+    let egl_surface = wayland_egl::WlEglSurface::new(&surface, size.x, size.y);
+    let egl_surface_ptr = egl_surface.ptr() as NativeWindowType;
 
-    //
+    // Xdg surfaces are any wl surface that are managed by the xdg extension.
+    // https://wayland-book.com/xdg-shell-basics/xdg-surface.html
+	let xdg_surface = connection.xdg.get_xdg_surface(&surface);
+	xdg_surface.quick_assign(move |xdg_surface, event, _| {
+		match event {
+			xdg_surface::Event::Configure { serial } => {
+                xdg_surface.ack_configure(serial);
+			},
+			_ => (),
+		}
+	});
+
+    // In xdg toplevel windows represent the main window of an app. ie: Not popup windows, ect.. 
+    // https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html
 	let xdg_toplevel = xdg_surface.get_toplevel();
-	xdg_toplevel.set_title("term".to_string());
+	xdg_toplevel.set_title(name);
     xdg_toplevel.quick_assign(move |_, event, _| match event {
         xdg_toplevel::Event::Close => {
             exit(0)
@@ -87,236 +90,79 @@ fn create_surface(
         xdg_toplevel::Event::Configure { width, height, states: _ } => {
             println!("redraw! size: ({}, {})", width, height);
 
-            if (width != 0 && height != 0) {
-
-            }
+            // Resize the surface.
+            egl_surface.resize(width, height, 0, 0);
         },
         _ => { unreachable!() }
     });
+    
+    // write out what we currently have and sync it to make sure the surface is configured.
+	surface.commit();
+    connection.sync();
+    println!("done syncing.");
 
-    //
-	wl_surface.commit();
-	ctx.display.flush().unwrap();
-
-    //
-	let surface = Arc::new(Surface {
-		handle: wl_surface,
-		initialized: AtomicBool::new(false)
-	});
-
-    //
-	let weak_surface = Arc::downgrade(&surface);
-
-    //
-	xdg_surface.quick_assign(move |xdg_surface, event, _| {
-		match event {
-			xdg_surface::Event::Configure { serial } => {
-                if let Some(surface) = weak_surface.upgrade() {
-                    if !surface.initialized.swap(true, Ordering::Relaxed) {
-                        xdg_surface.ack_configure(serial);
-
-                        let wl_egl_surface = wayland_egl::WlEglSurface::new(
-                            &surface.handle,
-                            width,
-                            height
-                        );
-
-                        let egl_surface = unsafe {
-                            egl.create_window_surface(
-                                egl_display,
-                                egl_config,
-                                wl_egl_surface.ptr() as egl::NativeWindowType,
-                                None
-                            ).expect("unable to create an EGL surface")
-                        };
-
-                        egl.make_current(
-                            egl_display,
-                            Some(egl_surface),
-                            Some(egl_surface),
-                            Some(egl_context)
-                        ).expect("unable to bind the context");
-
-                        render();
-
-                        egl.swap_buffers(egl_display, egl_surface).unwrap();
-                    }
-                }
-			},
-			_ => (),
-		}
-	});
-
-	surface
+    // return the surface
+	return (surface, egl_surface_ptr);
 }
 
 fn main() {
-	// Setup Open GL.
-	egl.bind_api(egl::OPENGL_API).expect("unable to select OpenGL API");
+	// Setup OpenGL and EGL. This binds all the functions pointers to the correct functions.
+	egl.bind_api(OPENGL_API).expect("unable to select OpenGL API");
 	gl::load_with(|name| egl.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
 	// Setup the Wayland client.
 	let mut connection = setup_wayland();
 
-	// Setup EGL.
-	let egl_display = setup_egl(&connection.display);
-	let (egl_context, egl_config) = create_context(egl_display);
-
 	// Create a surface.
 	// Note that it must be kept alive to the end of execution.
     // https://wayland-book.com/surfaces-in-depth.html
-	let _surface = create_surface(&connection, egl_display, egl_context, egl_config, 100, 100);
+	let (_surface, wl_egl_surface_ptr) = create_surface(
+        &mut connection,
+        
+        // The title of the window.
+        "term".to_string(),
+        
+        // The inital size of the window. Does not matter for sway.
+        Vec2::new(100, 100)
+    );
+
+	// Setup EGL.
+    let display_ptr = connection.display.get_display_ptr() as *mut std::ffi::c_void;
+	let egl_display = egl.get_display(display_ptr).unwrap();
+	egl.initialize(egl_display).unwrap();
+	let (egl_context, egl_config) = create_context(egl_display);
+
+    // Creates the EGL representation of the window.
+    // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglCreateWindowSurface.xhtml
+    let egl_surface = unsafe {
+        egl.create_window_surface(
+            egl_display,
+            egl_config,
+            wl_egl_surface_ptr,
+            None
+        ).expect("unable to create an EGL surface")
+    };
+
+    // Binds OpenGL context to the current thread and to the selected surface.
+    // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglMakeCurrent.xhtml
+    egl.make_current(
+        egl_display,
+        Some(egl_surface),
+        Some(egl_surface),
+        Some(egl_context)
+    ).expect("unable to bind the context");
+  
+    // Render to inactive buffer, the switch with the active one. 
+    // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglSwapBuffers.xhtml
+    render();
+    egl.swap_buffers(egl_display, egl_surface).unwrap();
 
     // Run the main event loop.
     // https://docs.rs/wayland-client/0.28.5/wayland_client/struct.EventQueue.html
 	loop {
-		connection.event_queue.dispatch(&mut (), |_, _, _| {}).unwrap();
+		connection.event_queue.dispatch(&mut (), |_, _, _| {
+            println!("event"); 
+        }).unwrap();
 	}
 }
 
-const VERTEX: &'static [GLint; 8] = &[
-	-1, -1,
-	 1, -1,
-	 1,  1,
-	-1,  1
-];
-
-const INDEXES: &'static [GLuint; 4] = &[
-	0, 1, 2, 3
-];
-
-const VERTEX_SHADER: &[u8] = b"#version 400
-in vec2 position;
-void main() {
-	gl_Position = vec4(position, 0.0f, 1.0f);
-}
-\0";
-
-const FRAGMENT_SHADER: &[u8] = b"#version 400
-out vec4 color;
-void main() {
-	color = vec4(1.0f, 0.0f, 0.0f, 1.0f);
-}
-\0";
-
-fn render() {
-    println!("rendering :o");
-	unsafe {
-		let vertex_shader = gl::CreateShader(gl::VERTEX_SHADER);
-		check_gl_errors();
-		let src = CStr::from_bytes_with_nul_unchecked(VERTEX_SHADER).as_ptr();
-		gl::ShaderSource(vertex_shader, 1, (&[src]).as_ptr(), ptr::null());
-		check_gl_errors();
-		gl::CompileShader(vertex_shader);
-		check_shader_status(vertex_shader);
-
-		let fragment_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
-		check_gl_errors();
-		let src = CStr::from_bytes_with_nul_unchecked(FRAGMENT_SHADER).as_ptr();
-		gl::ShaderSource(fragment_shader, 1, (&[src]).as_ptr(), ptr::null());
-		check_gl_errors();
-		gl::CompileShader(fragment_shader);
-		check_shader_status(fragment_shader);
-
-		let program = gl::CreateProgram();
-		check_gl_errors();
-		gl::AttachShader(program, vertex_shader);
-		check_gl_errors();
-		gl::AttachShader(program, fragment_shader);
-		check_gl_errors();
-		gl::LinkProgram(program);
-		check_gl_errors();
-		gl::UseProgram(program);
-		check_gl_errors();
-
-		let mut buffer = 0;
-		gl::GenBuffers(1, &mut buffer);
-		check_gl_errors();
-		gl::BindBuffer(gl::ARRAY_BUFFER, buffer);
-		check_gl_errors();
-		gl::BufferData(
-			gl::ARRAY_BUFFER,
-			8 * 4,
-			VERTEX.as_ptr() as *const std::ffi::c_void,
-			gl::STATIC_DRAW
-		);
-		check_gl_errors();
-
-		let mut vertex_input = 0;
-		gl::GenVertexArrays(1, &mut vertex_input);
-		check_gl_errors();
-		gl::BindVertexArray(vertex_input);
-		check_gl_errors();
-		gl::EnableVertexAttribArray(0);
-		check_gl_errors();
-		gl::VertexAttribPointer(
-			0, 2, gl::INT, gl::FALSE as GLboolean, 0, 0 as *const GLvoid
-		);
-		check_gl_errors();
-
-		let mut indexes = 0;
-		gl::GenBuffers(1, &mut indexes);
-		check_gl_errors();
-		gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, indexes);
-		check_gl_errors();
-		gl::BufferData(
-			gl::ELEMENT_ARRAY_BUFFER,
-			4 * 4,
-			INDEXES.as_ptr() as *const std::ffi::c_void,
-			gl::STATIC_DRAW
-		);
-		check_gl_errors();
-
-		gl::DrawElements(gl::TRIANGLE_FAN, 4, gl::UNSIGNED_INT, std::ptr::null());
-		check_gl_errors();
-	}
-}
-
-fn format_error(e: GLenum) -> &'static str {
-	 match e {
-		  gl::NO_ERROR => "No error",
-		  gl::INVALID_ENUM => "Invalid enum",
-		  gl::INVALID_VALUE => "Invalid value",
-		  gl::INVALID_OPERATION => "Invalid operation",
-		  gl::INVALID_FRAMEBUFFER_OPERATION => "Invalid framebuffer operation",
-		  gl::OUT_OF_MEMORY => "Out of memory",
-		  gl::STACK_UNDERFLOW => "Stack underflow",
-		  gl::STACK_OVERFLOW => "Stack overflow",
-		  _ => "Unknown error"
-	 }
-}
-
-pub fn check_gl_errors() {
-	 unsafe {
-		  match gl::GetError() {
-				gl::NO_ERROR => (),
-				e => {
-					panic!("OpenGL error: {}", format_error(e))
-				}
-		  }
-	 }
-}
-
-unsafe fn check_shader_status(shader: GLuint) {
-	let mut status = gl::FALSE as GLint;
-	gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut status);
-	if status != (gl::TRUE as GLint) {
-		let mut len = 0;
-		gl::GetProgramiv(shader, gl::INFO_LOG_LENGTH, &mut len);
-		if len > 0 {
-			let mut buf = Vec::with_capacity(len as usize);
-			buf.set_len((len as usize) - 1); // subtract 1 to skip the trailing null character
-			gl::GetProgramInfoLog(
-				shader,
-				len,
-				ptr::null_mut(),
-				buf.as_mut_ptr() as *mut GLchar,
-			);
-
-			let log = String::from_utf8(buf).unwrap();
-			eprintln!("shader compilation log:\n{}", log);
-		}
-
-		panic!("shader compilation failed");
-	}
-}
