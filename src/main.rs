@@ -4,26 +4,34 @@
 
 mod vec2;
 
-use vec2::Vec2;
+use egl::Upcast;
+pub use vec2::Vec2;
 
-use std::{cmp::min, io::{BufWriter, Write}, os::unix::io::AsRawFd, process::exit};
+use std::process::exit;
 
 use wayland_client::{
-    event_enum,
-    protocol::{wl_compositor, wl_keyboard, wl_surface, wl_pointer, wl_seat, wl_shm},
-    Display, Filter, GlobalManager, Main
+    protocol::{wl_compositor, wl_seat},
+    Display, GlobalManager
 };
 use wayland_protocols::xdg_shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
-use wayland_egl::WlEglSurface;
+use khronos_egl as egl;
+use gl;
 
 fn main() {
     init_wayland_client();
 }
 
+
+
 fn init_wayland_client() {
+    // Setup open Gl.
+    egl::API.bind_api(egl::OPENGL_API).expect("unable to find openGL Api");
+    gl::load_with(|name| egl::API.get_proc_address(name).unwrap() as *const std::ffi::c_void);
+    
     // Create the wl display.
     // https://wayland-book.com/wayland-display.html
     let display = Display::connect_to_env().expect("Failed to create wl display.");
+    let display_ptr = display.get_display_ptr() as *mut std::ffi::c_void;
 
     // Create an event queue and attach it to the display.
     // Used to send and recive messages from the compositor.
@@ -40,27 +48,79 @@ fn init_wayland_client() {
     // sent us all available globals.
     event_queue.sync_roundtrip(&mut (), |_, _, _| unreachable!()).unwrap();
 
+    // Part of api shared between windows.
+    // https://wayland-book.com/xdg-shell-basics.html
+    let xdg_wm_base = globals
+        .instantiate_exact::<xdg_wm_base::XdgWmBase>(2)
+        .expect("Compositor does not support xdg_shell");
+
+    // The only thing its doing here is do some ping pong to see if the app is responding.
+    xdg_wm_base.quick_assign(|xdg_wm_base, event, _| {
+        if let xdg_wm_base::Event::Ping { serial } = event {
+            xdg_wm_base.pong(serial);
+        };
+    });
+
+    // Get mouse of keyboard events.
+    globals.instantiate_exact::<wl_seat::WlSeat>(1).unwrap().quick_assign(move |_seat, _event, _| {
+    });
+
+
+    {
+        //
+        let egl_display = egl::API.get_display(display_ptr).unwrap();
+        egl::API.initialize(egl_display).unwrap();
+
+        let attrs = [
+            egl::RED_SIZE  , 8,
+            egl::GREEN_SIZE, 8,
+            egl::BLUE_SIZE , 8,
+            egl::NONE,
+        ];
+
+        let config = egl::API.choose_first_config(egl_display, &attrs).unwrap().unwrap();
+
+        let context_attributes = [
+            egl::CONTEXT_MAJOR_VERSION, 4,
+            egl::CONTEXT_MINOR_VERSION, 0,
+            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            egl::NONE
+        ];
+
+        egl::API.create_context(egl_display, config, None, &context_attributes).unwrap();
+    }
+
     // The compositor allows us to creates surfaces
     // https://wayland-book.com/surfaces/compositor.html
     let compositor = globals.instantiate_exact::<wl_compositor::WlCompositor>(1).unwrap();
     let surface = compositor.create_surface();
 
-    // The SHM represemts the share memory with the server.
-    // https://wayland-book.com/surfaces/shared-memory.html
-    // let shm = globals.instantiate_exact::<wl_shm::WlShm>(1).unwrap();
- 
-    // 
-    let size = Vec2::new(100, 100);
-    let egl_surface = WlEglSurface::new(&surface, size.x, size.y);
-    init_gl(egl_surface);
+    let weak_surface = Arc::downgrade(&surface);
 
     // The XDG wayland extension is resposible for creating the visible windows
-    // https://wayland-book.com/xdg-shell-basics.html
-    init_xdg_window(&globals, &surface);
+    let xdg_surface = xdg_wm_base.get_xdg_surface(&surface);
+    xdg_surface.quick_assign(move |xdg_surface, event, _| match event {
+        xdg_surface::Event::Configure { serial } => {
+            if let Some(surface) = weak_surface.upcast() {
 
-    // Get mouse of keyboard events.
-    globals.instantiate_exact::<wl_seat::WlSeat>(1).unwrap().quick_assign(move |seat, event, _| {
+            }
+
+            xdg_surface.ack_configure(serial);
+        }
+        _ => unreachable!(),
     });
+
+    let xdg_toplevel = xdg_surface.get_toplevel();
+    xdg_toplevel.quick_assign(move |_, event, _| match event {
+        xdg_toplevel::Event::Close => {
+            exit(0);
+        }
+        xdg_toplevel::Event::Configure { width: _w, height: _h, .. } => {
+        }
+        _ => unreachable!(),
+    });
+
+    xdg_toplevel.set_title("term".to_string());
 
     // IDK
     surface.commit();
@@ -74,40 +134,4 @@ fn init_wayland_client() {
             println!("unhandled event: {} - {}", event.interface, event.name);
         }).unwrap();
     }
-}
-
-fn init_gl(surface: WlEglSurface) {
-    gl::load_with(|s| surface.ptr());
-}
-
-fn init_xdg_window(globals: &GlobalManager, surface: &Main<wl_surface::WlSurface>) {
-    let xdg_wm_base = globals
-        .instantiate_exact::<xdg_wm_base::XdgWmBase>(2)
-        .expect("Compositor does not support xdg_shell");
-
-    xdg_wm_base.quick_assign(|xdg_wm_base, event, _| {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            xdg_wm_base.pong(serial);
-        };
-    });
-
-    let xdg_surface = xdg_wm_base.get_xdg_surface(&surface);
-    xdg_surface.quick_assign(move |xdg_surface, event, _| match event {
-        xdg_surface::Event::Configure { serial } => {
-            xdg_surface.ack_configure(serial);
-        }
-        _ => unreachable!(),
-    });
-
-    let xdg_toplevel = xdg_surface.get_toplevel();
-    xdg_toplevel.quick_assign(move |_, event, _| match event {
-        xdg_toplevel::Event::Close => {
-            exit(0);
-        }
-        xdg_toplevel::Event::Configure { width, height, .. } => {
-        }
-        _ => unreachable!(),
-    });
-
-    xdg_toplevel.set_title("term".to_string());
 }

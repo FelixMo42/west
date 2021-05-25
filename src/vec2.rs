@@ -9,12 +9,3 @@ impl<T> Vec2<T> {
         return Vec2 { x, y };
     }
 }
-
-impl Vec2<i32> {
-    pub fn to_u32(&self) -> Vec2<u32> {
-        Vec2::new(
-            self.x as u32,
-            self.y as u32
-        )
-    }
-}

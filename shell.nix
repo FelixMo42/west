@@ -12,6 +12,7 @@
         # needed to connect to wayland windowing api
         wayland
         wayland-protocols
+        egl-wayland
 
         # needed for keyboard
         libxkbcommon
@@ -21,5 +22,8 @@
         vulkan-headers
         vulkan-loader
         vulkan-validation-layers
+
+        # add EGL.so bindings
+        libGLU 
     ];
 }
