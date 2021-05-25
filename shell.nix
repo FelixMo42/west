@@ -4,8 +4,6 @@
         pkg-config
     ];
     buildInputs = with pkgs; [
-        libudev
-
         # needed for sound
         alsaLib
 
@@ -17,13 +15,7 @@
         # needed for keyboard
         libxkbcommon
         
-        # needed to connect to vulkan graphics api
-        vulkan-tools
-        vulkan-headers
-        vulkan-loader
-        vulkan-validation-layers
-
-        # add EGL.so bindings
+        # needed for egl/openGL
         libGLU 
     ];
 }

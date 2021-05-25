@@ -4,66 +4,29 @@ extern crate wayland_client;
 extern crate wayland_egl;
 extern crate wayland_protocols;
 
+mod window;
+
+use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::ptr;
 use std::ffi::CStr;
+
 use gl::types::{GLint, GLuint, GLchar, GLenum, GLboolean, GLvoid};
+
 use egl::API as egl;
 
 use wayland_client::{
-	protocol::{wl_compositor::WlCompositor, wl_surface::WlSurface},
-	DispatchData, Display, EventQueue, Main
+	protocol::wl_surface::WlSurface,
+	DispatchData, Display, Main
 };
 
 use wayland_protocols::xdg_shell::client::{
 	xdg_surface::{self, XdgSurface},
-	xdg_wm_base::{self, XdgWmBase},
+    xdg_toplevel,
 };
 
-fn process_xdg_event(xdg: Main<XdgWmBase>, event: xdg_wm_base::Event, _dd: DispatchData) {
-	use xdg_wm_base::Event::*;
-
-	match event {
-		Ping { serial } => xdg.pong(serial),
-		_ => (),
-	}
-}
-
-struct DisplayConnection {
-	display: Display,
-	event_queue: EventQueue,
-	compositor: Main<WlCompositor>,
-	xdg: Main<XdgWmBase>,
-}
-
-fn setup_wayland() -> DisplayConnection {
-	let display =
-		wayland_client::Display::connect_to_env().expect("unable to connect to the wayland server");
-	let mut event_queue = display.create_event_queue();
-	let attached_display = display.clone().attach(event_queue.token());
-
-	let globals = wayland_client::GlobalManager::new(&attached_display);
-
-	// Roundtrip to retrieve the globals list
-	event_queue
-		.sync_roundtrip(&mut (), |_, _, _| unreachable!())
-		.unwrap();
-
-	// Get the compositor.
-	let compositor: Main<WlCompositor> = globals.instantiate_exact(1).unwrap();
-
-	// Xdg protocol.
-	let xdg: Main<XdgWmBase> = globals.instantiate_exact(1).unwrap();
-	xdg.quick_assign(process_xdg_event);
-
-	DisplayConnection {
-		display,
-		event_queue,
-		compositor,
-		xdg,
-	}
-}
+use window::{ setup_wayland, DisplayConnection };
 
 fn setup_egl(display: &Display) -> egl::Display {
 	let egl_display = egl.get_display(display.get_display_ptr() as *mut std::ffi::c_void).unwrap();
@@ -74,12 +37,9 @@ fn setup_egl(display: &Display) -> egl::Display {
 
 fn create_context(display: egl::Display) -> (egl::Context, egl::Config) {
 	let attributes = [
-		egl::RED_SIZE,
-		8,
-		egl::GREEN_SIZE,
-		8,
-		egl::BLUE_SIZE,
-		8,
+		egl::RED_SIZE,   8,
+		egl::GREEN_SIZE, 8,
+		egl::BLUE_SIZE,  8,
 		egl::NONE,
 	];
 
@@ -88,12 +48,9 @@ fn create_context(display: egl::Display) -> (egl::Context, egl::Config) {
 		.expect("no EGL configuration found");
 
 	let context_attributes = [
-		egl::CONTEXT_MAJOR_VERSION,
-		4,
-		egl::CONTEXT_MINOR_VERSION,
-		0,
-		egl::CONTEXT_OPENGL_PROFILE_MASK,
-		egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+		egl::CONTEXT_MAJOR_VERSION, 4,
+		egl::CONTEXT_MINOR_VERSION, 0,
+		egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
 		egl::NONE,
 	];
 
@@ -116,36 +73,53 @@ fn create_surface(
 	width: i32,
 	height: i32,
 ) -> Arc<Surface> {
+    //
 	let wl_surface = ctx.compositor.create_surface();
 	let xdg_surface = ctx.xdg.get_xdg_surface(&wl_surface);
 
+    //
 	let xdg_toplevel = xdg_surface.get_toplevel();
-	xdg_toplevel.set_app_id("khronos-egl-test".to_string());
-	xdg_toplevel.set_title("Test".to_string());
+	xdg_toplevel.set_title("term".to_string());
+    xdg_toplevel.quick_assign(move |_, event, _| match event {
+        xdg_toplevel::Event::Close => {
+            exit(0)
+        },
+        xdg_toplevel::Event::Configure { width, height, states: _ } => {
+            println!("redraw! size: ({}, {})", width, height);
 
+            if (width != 0 && height != 0) {
+
+            }
+        },
+        _ => { unreachable!() }
+    });
+
+    //
 	wl_surface.commit();
 	ctx.display.flush().unwrap();
 
+    //
 	let surface = Arc::new(Surface {
 		handle: wl_surface,
 		initialized: AtomicBool::new(false)
 	});
 
+    //
 	let weak_surface = Arc::downgrade(&surface);
 
-	xdg_surface.quick_assign(move |xdg_surface: Main<XdgSurface>, event: xdg_surface::Event, _dd: DispatchData| {
-		use xdg_surface::Event::*;
-
-        let mut configed = true;
-
+    //
+	xdg_surface.quick_assign(move |xdg_surface, event, _| {
 		match event {
-			Configure { serial } => {
-
+			xdg_surface::Event::Configure { serial } => {
                 if let Some(surface) = weak_surface.upgrade() {
                     if !surface.initialized.swap(true, Ordering::Relaxed) {
                         xdg_surface.ack_configure(serial);
-                        
-                        let wl_egl_surface = wayland_egl::WlEglSurface::new(&surface.handle, width, height);
+
+                        let wl_egl_surface = wayland_egl::WlEglSurface::new(
+                            &surface.handle,
+                            width,
+                            height
+                        );
 
                         let egl_surface = unsafe {
                             egl.create_window_surface(
@@ -153,12 +127,15 @@ fn create_surface(
                                 egl_config,
                                 wl_egl_surface.ptr() as egl::NativeWindowType,
                                 None
-                            )
-                            .expect("unable to create an EGL surface")
+                            ).expect("unable to create an EGL surface")
                         };
 
-                        egl.make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
-                            .expect("unable to bind the context");
+                        egl.make_current(
+                            egl_display,
+                            Some(egl_surface),
+                            Some(egl_surface),
+                            Some(egl_context)
+                        ).expect("unable to bind the context");
 
                         render();
 
@@ -179,20 +156,21 @@ fn main() {
 	gl::load_with(|name| egl.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
 	// Setup the Wayland client.
-	let mut ctx = setup_wayland();
+	let mut connection = setup_wayland();
 
 	// Setup EGL.
-	let egl_display = setup_egl(&ctx.display);
+	let egl_display = setup_egl(&connection.display);
 	let (egl_context, egl_config) = create_context(egl_display);
 
 	// Create a surface.
 	// Note that it must be kept alive to the end of execution.
-	let _surface = create_surface(&ctx, egl_display, egl_context, egl_config, 800, 600);
+    // https://wayland-book.com/surfaces-in-depth.html
+	let _surface = create_surface(&connection, egl_display, egl_context, egl_config, 100, 100);
 
+    // Run the main event loop.
+    // https://docs.rs/wayland-client/0.28.5/wayland_client/struct.EventQueue.html
 	loop {
-		ctx.event_queue
-			.dispatch(&mut (), |_, _, _| { /* we ignore unfiltered messages */ })
-			.unwrap();
+		connection.event_queue.dispatch(&mut (), |_, _, _| {}).unwrap();
 	}
 }
 
@@ -222,6 +200,7 @@ void main() {
 \0";
 
 fn render() {
+    println!("rendering :o");
 	unsafe {
 		let vertex_shader = gl::CreateShader(gl::VERTEX_SHADER);
 		check_gl_errors();
