@@ -51,19 +51,29 @@ fn create_context(display: Display) -> (Context, Config) {
     (context, config)
 }
 
-fn create_surface(
-    connection: &mut DisplayConnection,
-    name: String,
-    size: Vec2<i32>,
-) -> (Main<wl_surface::WlSurface>, NativeWindowType) {
+fn main() {
+    // Setup OpenGL and EGL. This binds all the functions pointers to the correct functions.
+    egl.bind_api(OPENGL_API)
+        .expect("unable to select OpenGL API");
+    gl::load_with(|name| egl.get_proc_address(name).unwrap() as *const std::ffi::c_void);
+
+    // Setup the Wayland client.
+    let mut connection = setup_wayland();
+
+    // Setup EGL.
+    let display_ptr = connection.display.get_display_ptr() as *mut std::ffi::c_void;
+    let egl_display = egl.get_display(display_ptr).unwrap();
+    egl.initialize(egl_display).unwrap();
+    let (egl_context, egl_config) = create_context(egl_display);
+
     // Wl surfaces represent an output that is visible to the user.
     // https://wayland-book.com/surfaces-in-depth.html
     let surface = connection.compositor.create_surface();
 
     // Wraper around WlSurface to add the EGL capabilities.
     // https://docs.rs/wayland-egl/0.28.5/wayland_egl/struct.WlEglSurface.html
-    let egl_surface = wayland_egl::WlEglSurface::new(&surface, size.x, size.y);
-    let egl_surface_ptr = egl_surface.ptr() as NativeWindowType;
+    let wl_egl_surface = wayland_egl::WlEglSurface::new(&surface, 100, 100);
+    let wl_egl_surface_ptr = wl_egl_surface.ptr() as NativeWindowType;
 
     // Xdg surfaces are any wl surface that are managed by the xdg extension.
     // https://wayland-book.com/xdg-shell-basics/xdg-surface.html
@@ -78,7 +88,7 @@ fn create_surface(
     // In xdg toplevel windows represent the main window of an app. ie: Not popup windows, ect..
     // https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html
     let xdg_toplevel = xdg_surface.get_toplevel();
-    xdg_toplevel.set_title(name);
+    xdg_toplevel.set_title("term".to_string());
     xdg_toplevel.quick_assign(move |_, event, _| match event {
         xdg_toplevel::Event::Close => exit(0),
         xdg_toplevel::Event::Configure {
@@ -87,7 +97,7 @@ fn create_surface(
             states: _,
         } => {
             // Resize the egl surface.
-            egl_surface.resize(width, height, 0, 0);
+            wl_egl_surface.resize(width, height, 0, 0);
 
             // Tell OpenGL the new size of the window.
             // https://docs.microsoft.com/en-us/windows/win32/opengl/glviewport
@@ -101,36 +111,6 @@ fn create_surface(
     // write out what we currently have and sync it to make sure the surface is configured.
     surface.commit();
     connection.sync();
-
-    // return the surface
-    return (surface, egl_surface_ptr);
-}
-
-fn main() {
-    // Setup OpenGL and EGL. This binds all the functions pointers to the correct functions.
-    egl.bind_api(OPENGL_API)
-        .expect("unable to select OpenGL API");
-    gl::load_with(|name| egl.get_proc_address(name).unwrap() as *const std::ffi::c_void);
-
-    // Setup the Wayland client.
-    let mut connection = setup_wayland();
-    // Setup EGL.
-    let display_ptr = connection.display.get_display_ptr() as *mut std::ffi::c_void;
-    let egl_display = egl.get_display(display_ptr).unwrap();
-    egl.initialize(egl_display).unwrap();
-    let (egl_context, egl_config) = create_context(egl_display);
-
-    // Create a surface.
-    // Note that it must be kept alive to the end of execution.
-    // https://wayland-book.com/surfaces-in-depth.html
-    let (_surface, wl_egl_surface_ptr) = create_surface(
-        &mut connection,
-        // The title of the window.
-        "term".to_string(),
-        // The inital size of the window. Does not matter for sway.
-        Vec2::new(100, 100),
-    );
-
 
     // Creates the EGL representation of the window.
     // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglCreateWindowSurface.xhtml
