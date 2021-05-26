@@ -1,11 +1,12 @@
-use wayland_client::EventQueue;
 use wayland_client::{protocol::wl_compositor::WlCompositor, Display, Main};
+use wayland_client::{EventQueue, GlobalManager};
 use wayland_protocols::xdg_shell::client::xdg_wm_base;
 
 pub struct DisplayConnection {
     pub display: Display,
     pub event_queue: EventQueue,
     pub compositor: Main<WlCompositor>,
+    pub globals: GlobalManager,
     pub xdg: Main<xdg_wm_base::XdgWmBase>,
 }
 
@@ -52,6 +53,7 @@ pub fn setup_wayland() -> DisplayConnection {
         display,
         event_queue,
         compositor,
+        globals,
         xdg,
     }
 }

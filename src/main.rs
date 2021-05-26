@@ -7,7 +7,7 @@ use khronos_egl::{
     CONTEXT_MINOR_VERSION, CONTEXT_OPENGL_CORE_PROFILE_BIT, CONTEXT_OPENGL_PROFILE_MASK,
     GREEN_SIZE, NONE, OPENGL_API, RED_SIZE,
 };
-use mygl::render;
+use mygl::{ make_program, render };
 use std::process::exit;
 use vec2::Vec2;
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface};
@@ -15,10 +15,15 @@ use wayland_client::{event_enum, Filter, Main};
 use wayland_protocols::xdg_shell::client::{xdg_surface, xdg_toplevel};
 use window::{setup_wayland, DisplayConnection};
 
+pub enum WindowEvent {
+    Resize(Vec2<i32>)
+}
+
 event_enum!(
     Event |
     Mouse => wl_pointer::WlPointer,
-    Keyboard => wl_keyboard::WlKeyboard
+    Keyboard => wl_keyboard::WlKeyboard |
+    Window => WindowEvent
 );
 
 fn create_context(display: Display) -> (Context, Config) {
@@ -81,10 +86,12 @@ fn create_surface(
             height,
             states: _,
         } => {
-            println!("redraw! size: ({}, {})", width, height);
-
-            // Resize the surface.
+            // Resize the egl surface.
             egl_surface.resize(width, height, 0, 0);
+
+            // Tell OpenGL the new size of the window.
+            // https://docs.microsoft.com/en-us/windows/win32/opengl/glviewport
+            unsafe { gl::Viewport(0, 0, width, height); }
         }
         _ => {
             unreachable!()
@@ -94,7 +101,6 @@ fn create_surface(
     // write out what we currently have and sync it to make sure the surface is configured.
     surface.commit();
     connection.sync();
-    println!("done syncing.");
 
     // return the surface
     return (surface, egl_surface_ptr);
@@ -108,6 +114,11 @@ fn main() {
 
     // Setup the Wayland client.
     let mut connection = setup_wayland();
+    // Setup EGL.
+    let display_ptr = connection.display.get_display_ptr() as *mut std::ffi::c_void;
+    let egl_display = egl.get_display(display_ptr).unwrap();
+    egl.initialize(egl_display).unwrap();
+    let (egl_context, egl_config) = create_context(egl_display);
 
     // Create a surface.
     // Note that it must be kept alive to the end of execution.
@@ -120,11 +131,6 @@ fn main() {
         Vec2::new(100, 100),
     );
 
-    // Setup EGL.
-    let display_ptr = connection.display.get_display_ptr() as *mut std::ffi::c_void;
-    let egl_display = egl.get_display(display_ptr).unwrap();
-    egl.initialize(egl_display).unwrap();
-    let (egl_context, egl_config) = create_context(egl_display);
 
     // Creates the EGL representation of the window.
     // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglCreateWindowSurface.xhtml
@@ -143,13 +149,47 @@ fn main() {
     )
     .expect("unable to bind the context");
 
+    // Set up OpenGL
+    let program = make_program(); 
+
     // Render to inactive buffer, the switch with the active one.
     // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglSwapBuffers.xhtml
-    render();
+    render(program);
     egl.swap_buffers(egl_display, egl_surface).unwrap();
 
-    /* let event_filter = Filter::new(move |event, _, _| match event {
-    }); */
+    // Callback for varius types of events.
+    let event_filter = Filter::new(move |event, _, _| match event {
+        Event::Keyboard { event, .. } => {
+        }
+        Event::Mouse { event, .. } => {}
+        Event::Window(event) => {
+            render(program);
+            egl.swap_buffers(egl_display, egl_surface).unwrap();
+        } 
+    });
+
+    // A wayland seat represents a users input divices.
+    // https://wayland-book.com/seat.html
+    connection
+        .globals
+        .instantiate_exact::<wl_seat::WlSeat>(1)
+        .unwrap()
+        .quick_assign(move |seat, event, _| {
+            if let wl_seat::Event::Capabilities { capabilities } = event {
+                println!("seat inilized.");
+
+                if capabilities.contains(wl_seat::Capability::Pointer) {
+                    println!("mouse inilized.");
+                    seat.get_pointer().assign(event_filter.clone());
+                }
+
+                if capabilities.contains(wl_seat::Capability::Keyboard) {
+                    println!("keyboard inilized.");
+                    seat.get_keyboard().assign(event_filter.clone());
+                }
+            }
+        });
+
 
     // Run the main event loop.
     // https://docs.rs/wayland-client/0.28.5/wayland_client/struct.EventQueue.html
@@ -157,7 +197,7 @@ fn main() {
         connection
             .event_queue
             .dispatch(&mut (), |_, _, _| {
-                println!("event");
+                println!("unhandled event");
             })
             .unwrap();
     }

@@ -22,36 +22,36 @@ void main() {
 }
 \0";
 
-pub fn render() {
-    println!("rendering :o");
+pub fn make_program() -> u32 {
     unsafe {
         let vertex_shader = gl::CreateShader(gl::VERTEX_SHADER);
-        check_gl_errors();
         let src = CStr::from_bytes_with_nul_unchecked(VERTEX_SHADER).as_ptr();
         gl::ShaderSource(vertex_shader, 1, (&[src]).as_ptr(), ptr::null());
-        check_gl_errors();
         gl::CompileShader(vertex_shader);
         check_shader_status(vertex_shader);
 
         let fragment_shader = gl::CreateShader(gl::FRAGMENT_SHADER);
-        check_gl_errors();
         let src = CStr::from_bytes_with_nul_unchecked(FRAGMENT_SHADER).as_ptr();
         gl::ShaderSource(fragment_shader, 1, (&[src]).as_ptr(), ptr::null());
-        check_gl_errors();
         gl::CompileShader(fragment_shader);
         check_shader_status(fragment_shader);
 
         let program = gl::CreateProgram();
-        check_gl_errors();
         gl::AttachShader(program, vertex_shader);
-        check_gl_errors();
         gl::AttachShader(program, fragment_shader);
-        check_gl_errors();
         gl::LinkProgram(program);
-        check_gl_errors();
         gl::UseProgram(program);
+
         check_gl_errors();
 
+        return program;
+    }
+}
+
+pub fn render(program: u32) {
+    println!("rendering :o");
+
+    unsafe {
         let mut buffer = 0;
         gl::GenBuffers(1, &mut buffer);
         check_gl_errors();
