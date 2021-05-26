@@ -18,11 +18,11 @@ void main() {
 const FRAGMENT_SHADER: &[u8] = b"#version 400
 out vec4 color;
 void main() {
-	color = vec4(1.0f, 0.0f, 0.0f, 1.0f);
+	color = vec4(0.0f, 0.25f, 0.0f, 1.0f);
 }
 \0";
 
-pub fn make_program() -> u32 {
+pub fn compile_program() -> u32 {
     unsafe {
         let vertex_shader = gl::CreateShader(gl::VERTEX_SHADER);
         let src = CStr::from_bytes_with_nul_unchecked(VERTEX_SHADER).as_ptr();
@@ -43,12 +43,13 @@ pub fn make_program() -> u32 {
         gl::UseProgram(program);
 
         check_gl_errors();
-
+        
         return program;
     }
+
 }
 
-pub fn render(program: u32) {
+pub fn render() {
     println!("rendering :o");
 
     unsafe {

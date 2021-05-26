@@ -7,11 +7,11 @@ use khronos_egl::{
     CONTEXT_MINOR_VERSION, CONTEXT_OPENGL_CORE_PROFILE_BIT, CONTEXT_OPENGL_PROFILE_MASK,
     GREEN_SIZE, NONE, OPENGL_API, RED_SIZE,
 };
-use mygl::{ make_program, render };
+use mygl::{compile_program, render};
 use std::process::exit;
 use vec2::Vec2;
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface};
-use wayland_client::{event_enum, Filter, Main};
+use wayland_client::{DispatchData, Filter, Main, event_enum};
 use wayland_protocols::xdg_shell::client::{xdg_surface, xdg_toplevel};
 use window::{setup_wayland, DisplayConnection};
 
@@ -75,6 +75,44 @@ fn main() {
     let wl_egl_surface = wayland_egl::WlEglSurface::new(&surface, 100, 100);
     let wl_egl_surface_ptr = wl_egl_surface.ptr() as NativeWindowType;
 
+    // Creates the EGL representation of the window.
+    // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglCreateWindowSurface.xhtml
+    let egl_surface = unsafe {
+        egl.create_window_surface(egl_display, egl_config, wl_egl_surface_ptr, None)
+            .expect("unable to create an EGL surface")
+    };
+
+    // Callback for varius types of events.
+    let event_filter = Filter::new(move |event, _, _| match event {
+        Event::Keyboard { event, .. } => match event {
+            wl_keyboard::Event::Enter { .. } => {
+                println!("gained keyboard focus.");
+            }
+            wl_keyboard::Event::Leave { .. } => {
+                println!("lost keyboard focus.");
+            }
+            wl_keyboard::Event::Key { key, state, .. } => {
+                println!("Key with id {} was {:?}", key, state);
+            }
+            _ => {}
+        }
+        Event::Mouse { event, .. } => match event {
+            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
+                println!("mouse moved");
+            },
+            wl_pointer::Event::Button { button, state, .. } => {
+                println!("mouse clicked");
+            }
+            _ => {}
+        }
+        Event::Window(event) => {
+            render();
+            egl.swap_buffers(egl_display, egl_surface).unwrap();
+        } 
+    });
+
+    let event_filter2 = event_filter.clone();
+
     // Xdg surfaces are any wl surface that are managed by the xdg extension.
     // https://wayland-book.com/xdg-shell-basics/xdg-surface.html
     let xdg_surface = connection.xdg.get_xdg_surface(&surface);
@@ -89,19 +127,26 @@ fn main() {
     // https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html
     let xdg_toplevel = xdg_surface.get_toplevel();
     xdg_toplevel.set_title("term".to_string());
-    xdg_toplevel.quick_assign(move |_, event, _| match event {
+    xdg_toplevel.quick_assign(move |_, event, dispatch_data| match event {
         xdg_toplevel::Event::Close => exit(0),
         xdg_toplevel::Event::Configure {
             width,
             height,
             states: _,
         } => {
-            // Resize the egl surface.
-            wl_egl_surface.resize(width, height, 0, 0);
+            if width != 0 && height != 0 {
+                // Resize the egl surface.
+                wl_egl_surface.resize(width, height, 0, 0);
 
-            // Tell OpenGL the new size of the window.
-            // https://docs.microsoft.com/en-us/windows/win32/opengl/glviewport
-            unsafe { gl::Viewport(0, 0, width, height); }
+                // Tell OpenGL the new size of the window.
+                // https://docs.microsoft.com/en-us/windows/win32/opengl/glviewport
+                unsafe { gl::Viewport(0, 0, width, height); }
+
+                // Send the event to the event manageger.
+                let size = Vec2::new(width, height);
+                let event = Event::Window(WindowEvent::Resize(size));
+                event_filter2.send(event, dispatch_data);
+            }
         }
         _ => {
             unreachable!()
@@ -111,13 +156,6 @@ fn main() {
     // write out what we currently have and sync it to make sure the surface is configured.
     surface.commit();
     connection.sync();
-
-    // Creates the EGL representation of the window.
-    // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglCreateWindowSurface.xhtml
-    let egl_surface = unsafe {
-        egl.create_window_surface(egl_display, egl_config, wl_egl_surface_ptr, None)
-            .expect("unable to create an EGL surface")
-    };
 
     // Binds OpenGL context to the current thread and to the selected surface.
     // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglMakeCurrent.xhtml
@@ -130,23 +168,14 @@ fn main() {
     .expect("unable to bind the context");
 
     // Set up OpenGL
-    let program = make_program(); 
+    compile_program(); 
 
     // Render to inactive buffer, the switch with the active one.
+    // This will get draw over beffor ever being seen, but we must draw something for
+    // sway to start displaying the window.
     // https://www.khronos.org/registry/EGL/sdk/docs/man/html/eglSwapBuffers.xhtml
-    render(program);
+    render();
     egl.swap_buffers(egl_display, egl_surface).unwrap();
-
-    // Callback for varius types of events.
-    let event_filter = Filter::new(move |event, _, _| match event {
-        Event::Keyboard { event, .. } => {
-        }
-        Event::Mouse { event, .. } => {}
-        Event::Window(event) => {
-            render(program);
-            egl.swap_buffers(egl_display, egl_surface).unwrap();
-        } 
-    });
 
     // A wayland seat represents a users input divices.
     // https://wayland-book.com/seat.html
@@ -169,7 +198,6 @@ fn main() {
                 }
             }
         });
-
 
     // Run the main event loop.
     // https://docs.rs/wayland-client/0.28.5/wayland_client/struct.EventQueue.html
