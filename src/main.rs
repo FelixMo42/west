@@ -7,13 +7,13 @@ use khronos_egl::{
     CONTEXT_MINOR_VERSION, CONTEXT_OPENGL_CORE_PROFILE_BIT, CONTEXT_OPENGL_PROFILE_MASK,
     GREEN_SIZE, NONE, OPENGL_API, RED_SIZE,
 };
-use mygl::{compile_program, render};
+use mygl::{compile_program, load_font, render};
 use std::process::exit;
 use vec2::Vec2;
-use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat, wl_surface};
-use wayland_client::{DispatchData, Filter, Main, event_enum};
+use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat};
+use wayland_client::{Filter, event_enum};
 use wayland_protocols::xdg_shell::client::{xdg_surface, xdg_toplevel};
-use window::{setup_wayland, DisplayConnection};
+use window::setup_wayland;
 
 pub enum WindowEvent {
     Resize(Vec2<i32>)
@@ -35,12 +35,9 @@ fn create_context(display: Display) -> (Context, Config) {
         .expect("no EGL configuration found");
 
     let context_attributes = [
-        CONTEXT_MAJOR_VERSION,
-        4,
-        CONTEXT_MINOR_VERSION,
-        0,
-        CONTEXT_OPENGL_PROFILE_MASK,
-        CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        CONTEXT_MAJOR_VERSION, 4,
+        CONTEXT_MINOR_VERSION, 4,
+        CONTEXT_OPENGL_PROFILE_MASK, CONTEXT_OPENGL_CORE_PROFILE_BIT,
         NONE,
     ];
 
@@ -52,6 +49,10 @@ fn create_context(display: Display) -> (Context, Config) {
 }
 
 fn main() {
+    load_font();
+}
+
+fn init() {
     // Setup OpenGL and EGL. This binds all the functions pointers to the correct functions.
     egl.bind_api(OPENGL_API)
         .expect("unable to select OpenGL API");
@@ -86,32 +87,29 @@ fn main() {
     let event_filter = Filter::new(move |event, _, _| match event {
         Event::Keyboard { event, .. } => match event {
             wl_keyboard::Event::Enter { .. } => {
-                println!("gained keyboard focus.");
             }
             wl_keyboard::Event::Leave { .. } => {
-                println!("lost keyboard focus.");
             }
-            wl_keyboard::Event::Key { key, state, .. } => {
-                println!("Key with id {} was {:?}", key, state);
+            wl_keyboard::Event::Key { key: _, state: _, .. } => {
             }
             _ => {}
         }
         Event::Mouse { event, .. } => match event {
-            wl_pointer::Event::Motion { surface_x, surface_y, .. } => {
-                println!("mouse moved");
+            wl_pointer::Event::Motion { surface_x: _, surface_y: _, .. } => {
             },
-            wl_pointer::Event::Button { button, state, .. } => {
+            wl_pointer::Event::Button { button: _, state: _, .. } => {
                 println!("mouse clicked");
             }
             _ => {}
         }
-        Event::Window(event) => {
-            render();
-            egl.swap_buffers(egl_display, egl_surface).unwrap();
+        Event::Window(event) => match event {
+            WindowEvent::Resize(_size) => {
+                render();
+                egl.swap_buffers(egl_display, egl_surface).unwrap();
+            }
         } 
     });
 
-    let event_filter2 = event_filter.clone();
 
     // Xdg surfaces are any wl surface that are managed by the xdg extension.
     // https://wayland-book.com/xdg-shell-basics/xdg-surface.html
@@ -127,14 +125,13 @@ fn main() {
     // https://wayland-book.com/xdg-shell-basics/xdg-toplevel.html
     let xdg_toplevel = xdg_surface.get_toplevel();
     xdg_toplevel.set_title("term".to_string());
+    let event_filter2 = event_filter.clone();
     xdg_toplevel.quick_assign(move |_, event, dispatch_data| match event {
         xdg_toplevel::Event::Close => exit(0),
-        xdg_toplevel::Event::Configure {
-            width,
-            height,
-            states: _,
-        } => {
-            if width != 0 && height != 0 {
+        xdg_toplevel::Event::Configure { width, height, states: _ } => {
+            let (prev_width, prev_height) = wl_egl_surface.get_size();
+            
+            if (width != 0 && height != 0) && (width != prev_width || height != prev_height) {
                 // Resize the egl surface.
                 wl_egl_surface.resize(width, height, 0, 0);
 

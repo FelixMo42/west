@@ -17,5 +17,8 @@
         
         # needed for egl/openGL
         libGLU 
+
+        # needed for font rendering
+        freetype
     ];
 }

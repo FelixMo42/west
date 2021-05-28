@@ -1,5 +1,5 @@
 [package]
-name = "wst"
+name = "west"
 version = "0.1.0"
 authors = ["FelixMo42 <felix@tacocat.com>"]
 edition = "2018"
@@ -10,4 +10,4 @@ wayland-protocols = { version = "0.28.5", features = ["client"] }
 wayland-egl = { version = "0.28.5" }
 khronos-egl = { version = "4.1.0", features = ["static"] }
 gl = { version = "0.14.0" }
-
+freetype-rs = "0.28.0"
