@@ -5,9 +5,14 @@ use std::ptr;
 use freetype;
 use crate::vec2::Vec2;
 
-const VERTEX: &'static [GLint; 8] = &[-1, -1, 1, -1, 1, 1, -1, 1];
+const VERTEX: &'static [GLint; 8] = &[
+    -1, -1,
+     1, -1,
+     1,  1,
+    -1,  1
+];
 
-const INDEXES: &'static [GLuint; 3] = &[0, 1, 2];
+const INDEXES: &'static [GLuint; 6] = &[0, 1, 2, 0, 2, 3];
 
 const VERTEX_SHADER: &[u8] = b"#version 400
 in vec2 position;
@@ -49,13 +54,56 @@ pub fn compile_program() -> u32 {
         
         return program;
     }
+}
 
+pub unsafe fn create_font_texture() -> u32 {
+    // https://togglebit.io/posts/rust-opengl-part-3/
+
+    // Create one new texture.
+    let mut texture_id = 0;
+    gl::GenTextures(1, &mut texture_id);
+
+    // Select the new texture so that we can edit it.
+    gl::BindTexture(gl::TEXTURE_2D,  texture_id);
+
+    let (texture_size, texture) = load_font();
+
+    // Load the font texture into opengl.
+    // https://www.khronos.org/registry/OpenGL-Refpages/gl4/html/glTexImage2D.xhtml
+    gl::TexImage2D(
+        // We want to edit the currently selected TEXTURE_2D
+        gl::TEXTURE_2D,
+
+        // Level of detail. 0 is just the base image.
+        0,
+        
+        // Number of color numbers in each pixels.
+        gl::R8 as GLint,
+
+        // Size of the texture in pixels.
+        1, // texture_size.x as i32,
+        1, // texture_size.y as i32,
+
+        // Legacy paramater, must be 0.
+        0,
+
+        // What do the color component represent?
+        gl::ALPHA,
+
+        // What number type should represent each number. 
+        gl::UNSIGNED_BYTE,
+
+        // And finaly, the actuall data.
+        vec![ 0u8, 0u8, 0u8, 0u8 ].as_ptr().cast() // texture.as_ptr().cast()
+    );
+    
+    return texture_id
 }
 
 const WIDTH: usize = 32;
 const HEIGHT: usize = 24;
 
-pub fn load_font() {
+pub fn load_font() -> (Vec2<usize>, Vec<u8>) {
     // Path to font.
     let path = "/nix/store/krgyqigzhx2jd4i9kp104b5wkkk6gn3j-dejavu-fonts-2.37/share/fonts/truetype/DejaVuSansMono.ttf";
 
@@ -68,9 +116,17 @@ pub fn load_font() {
     // Set the font size
     face.set_char_size(40 * 64, 0, 50, 0).unwrap();
 
-    for chr in "abcdef".chars() {
-        face.load_char(chr as usize, freetype::face::LoadFlag::RENDER); 
+    // What characters do we want to load?
+    let glyphs = "abcdef";
 
+    // Create a 2d buffer for the texture.
+    let texture_size = Vec2::new(WIDTH * glyphs.len(), HEIGHT);
+    let mut texture = vec![0u8; texture_size.x * texture_size.y];
+
+    // Rasturize each character and add them to the buffer.
+    for (i, chr) in glyphs.char_indices() {
+        // Rasturize the character.
+        face.load_char(chr as usize, freetype::face::LoadFlag::RENDER).unwrap();
         let glyph = face.glyph();
 
         let offset = Vec2::new(
@@ -80,17 +136,19 @@ pub fn load_font() {
 
         let bitmap = glyph.bitmap();
 
-        let size = Vec2::new(bitmap.width(), bitmap.rows());
+        let size = Vec2::new(bitmap.width() as usize, bitmap.rows() as usize);
 
-        for y in 0..size.y {
-            for x in 0..size.x {
-                print!("{}", 
-                    if bitmap.buffer()[(x + y * size.x) as usize] < 128 { " " } else { "#" }
-                );
+        let buffer = bitmap.buffer();
+
+        for x in offset.x..offset.x+size.x {
+            for y in offset.y..offset.y+size.x {
+                let pixel = buffer[(x - offset.x) + (y - offset.y) * size.x];
+                texture[ x + i * WIDTH + y * texture_size.x ] = pixel;
             }
-            println!("");
         }
     }
+
+    return (texture_size, texture);
 }
 
 pub fn render() {

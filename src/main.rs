@@ -7,7 +7,7 @@ use khronos_egl::{
     CONTEXT_MINOR_VERSION, CONTEXT_OPENGL_CORE_PROFILE_BIT, CONTEXT_OPENGL_PROFILE_MASK,
     GREEN_SIZE, NONE, OPENGL_API, RED_SIZE,
 };
-use mygl::{compile_program, load_font, render};
+use mygl::{compile_program, create_font_texture, render};
 use std::process::exit;
 use vec2::Vec2;
 use wayland_client::protocol::{wl_keyboard, wl_pointer, wl_seat};
@@ -49,10 +49,6 @@ fn create_context(display: Display) -> (Context, Config) {
 }
 
 fn main() {
-    load_font();
-}
-
-fn init() {
     // Setup OpenGL and EGL. This binds all the functions pointers to the correct functions.
     egl.bind_api(OPENGL_API)
         .expect("unable to select OpenGL API");
@@ -165,7 +161,10 @@ fn init() {
     .expect("unable to bind the context");
 
     // Set up OpenGL
-    compile_program(); 
+    unsafe {
+        compile_program(); 
+        create_font_texture();
+    }
 
     // Render to inactive buffer, the switch with the active one.
     // This will get draw over beffor ever being seen, but we must draw something for
@@ -195,7 +194,7 @@ fn init() {
                 }
             }
         });
-
+    
     // Run the main event loop.
     // https://docs.rs/wayland-client/0.28.5/wayland_client/struct.EventQueue.html
     loop {
